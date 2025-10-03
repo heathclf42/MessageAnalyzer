@@ -1,0 +1,38 @@
+# Core dependencies for MessageAnalyzer
+# Text message conversation analysis with LLM-powered insights
+
+# LLM Inference
+ollama==0.6.0
+
+# Machine Learning & NLP
+torch==2.8.0
+transformers==4.56.2
+sentencepiece==0.2.1
+tokenizers==0.22.1
+safetensors==0.6.2
+tiktoken==0.11.0
+
+# Data Processing
+numpy==2.3.3
+psutil==7.1.0
+
+# HTTP & Networking
+httpx==0.28.1
+httpcore==1.0.9
+requests==2.32.5
+
+# Hugging Face
+huggingface-hub==0.35.3
+
+# Utilities
+pydantic==2.11.9
+pydantic_core==2.33.2
+PyYAML==6.0.3
+tqdm==4.67.1
+Jinja2==3.1.6
+
+# System
+filelock==3.19.1
+packaging==25.0
+regex==2025.9.18
+typing_extensions==4.15.0

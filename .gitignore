@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Data files (CRITICAL - contains personal messages)
+data/raw/
+data/output/
+data/processed/
+*.db
+*.sqlite
+*.sqlite3
+
+# Large output files
+*.json
+*.html
+!requirements.json
+!package.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Credentials & Secrets
+.env
+.env.local
+*.key
+*_credentials.json
+secrets/
+*.pem
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Machine Learning Models (large files)
+models/
+*.pth
+*.bin
+*.onnx
+*.pkl
+*.h5
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
