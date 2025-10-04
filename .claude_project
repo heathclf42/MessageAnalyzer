@@ -1,0 +1,44 @@
+# Claude Code Project Context
+
+## IMPORTANT: Read This First When Starting New Session
+
+This is the MessageAnalyzer project. To get up to speed:
+
+1. **READ README.md FIRST** - Complete project overview, status, and quick start
+2. **READ TODO.md** - Current priorities and task list
+3. **READ PROJECT_STRUCTURE.md** - Architecture and file locations
+4. **CHECK docs/design/CODE_AUDIT.md** - Recent changes and decisions
+
+## Current Session Handoff
+
+**Last Session Ended:** October 2, 2025
+**Status:** Completed project reorganization and documentation
+
+**Last Completed:**
+- Moved entire project to organized directory structure
+- Deleted 7 deprecated files
+- Created comprehensive documentation (README, PROJECT_STRUCTURE, CODE_AUDIT)
+- Created centralized config (config/paths.py)
+
+**Next Steps (Priority Order):**
+1. Update Python scripts to use config/paths.py for new directory structure
+2. Test all scripts work with new structure
+3. Add radar charts for top 7 archetypes to dashboards
+4. Research LLMs for better analysis
+
+**Current Blockers:** None
+
+## Quick Reference
+
+- **Project Root:** `~/Documents/Python/Projects/MessageAnalyzer/`
+- **Source Code:** `src/`
+- **Data Files:** `data/output/all_conversations/`
+- **Main README:** `README.md` ← START HERE
+
+## Files to Read on Session Start
+
+Priority order:
+1. README.md (project overview)
+2. TODO.md (tasks)
+3. PROJECT_STRUCTURE.md (architecture)
+4. This file (.claude_project)
