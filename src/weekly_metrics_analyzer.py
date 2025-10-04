@@ -237,15 +237,179 @@ OUTPUT REQUIREMENTS:
 
         return prompt
 
+    def extract_date_range(self, response_text: str) -> Dict[str, str]:
+        """Extract date range from citations in response."""
+        import re
+
+        # Find all dates in citations
+        date_pattern = r'\[(\d{4}-\d{2}-\d{2})'
+        dates = re.findall(date_pattern, response_text)
+
+        if dates:
+            dates.sort()
+            return {
+                'start_date': dates[0],
+                'end_date': dates[-1],
+                'date_range': f"{dates[0]} to {dates[-1]}"
+            }
+
+        return {'start_date': None, 'end_date': None, 'date_range': 'Unknown'}
+
+    def validate_metrics(self, response_text: str) -> Dict[str, Any]:
+        """Validate that all required metrics are present and parseable."""
+        import re
+
+        validation = {
+            'is_valid': True,
+            'errors': [],
+            'warnings': []
+        }
+
+        # Check for required sections
+        required_sections = [
+            'SENTIMENT SCORES',
+            'PERSONALITY TRAITS',
+            'PSYCHOLOGICAL TRAITS',
+            'EMOTIONAL STATES',
+            'ARCHETYPE DISTRIBUTION',
+            'COMMUNICATION METRICS',
+            'RELATIONSHIP EVOLUTION'
+        ]
+
+        for section in required_sections:
+            if section not in response_text:
+                validation['errors'].append(f"Missing required section: {section}")
+                validation['is_valid'] = False
+
+        # Validate sentiment scores are present and parseable
+        you_sentiment = re.search(r'(?:\*\*)?YOU(?:\*\*)?:.*?Positive:\s*(\d+)/100', response_text, re.DOTALL)
+        them_sentiment = re.search(r'(?:\*\*)?THEM(?:\*\*)?:.*?Positive:\s*(\d+)/100', response_text, re.DOTALL)
+
+        if not you_sentiment:
+            validation['errors'].append("Could not parse YOU sentiment scores")
+            validation['is_valid'] = False
+
+        if not them_sentiment:
+            validation['errors'].append("Could not parse THEM sentiment scores")
+            validation['is_valid'] = False
+
+        # Check for citation format
+        citations = re.findall(r'\[\d{4}-\d{2}-\d{2}', response_text)
+        if len(citations) < 3:
+            validation['warnings'].append(f"Only {len(citations)} citations found, expected at least 3")
+
+        # Check for academic references (should be forbidden)
+        if re.search(r'References:|et al\.|Ekman|Russell|Frijda', response_text):
+            validation['warnings'].append("Found possible academic references (should be citations only)")
+
+        # Check for metric/narrative discrepancies (CRITICAL - triggers retry)
+        if you_sentiment and them_sentiment:
+            you_pos = int(you_sentiment.group(1))
+            them_pos = int(them_sentiment.group(1))
+
+            # Extract overall tone statements (capture multiple words for "VERY POSITIVE" etc.)
+            you_tone = re.search(r'Overall Tone:\s*([\w\s]+?)(?:\n|$)', response_text)
+            them_tone_match = re.search(r'THEM.*?Overall Tone:\s*([\w\s]+?)(?:\n|$)', response_text, re.DOTALL)
+
+            if you_tone:
+                tone = you_tone.group(1).strip().upper()
+                # Check if numerical scores match narrative tone - ERRORS trigger retry
+                if you_pos >= 70 and tone not in ['POSITIVE', 'VERY POSITIVE']:
+                    validation['errors'].append(f"YOU sentiment score ({you_pos}) suggests POSITIVE but tone is '{tone}'")
+                    validation['is_valid'] = False
+                elif you_pos <= 40 and tone not in ['NEGATIVE', 'VERY NEGATIVE']:
+                    validation['errors'].append(f"YOU sentiment score ({you_pos}) suggests NEGATIVE but tone is '{tone}'")
+                    validation['is_valid'] = False
+
+            if them_tone_match:
+                tone = them_tone_match.group(1).strip().upper()
+                if them_pos >= 70 and tone not in ['POSITIVE', 'VERY POSITIVE']:
+                    validation['errors'].append(f"THEM sentiment score ({them_pos}) suggests POSITIVE but tone is '{tone}'")
+                    validation['is_valid'] = False
+                elif them_pos <= 40 and tone not in ['NEGATIVE', 'VERY NEGATIVE']:
+                    validation['errors'].append(f"THEM sentiment score ({them_pos}) suggests NEGATIVE but tone is '{tone}'")
+                    validation['is_valid'] = False
+
+        return validation
+
+    def refine_prompt_with_llm(self, original_prompt: str, failed_output: str, validation_errors: List[str]) -> str:
+        """Use LLM to refine the prompt based on validation failures."""
+
+        meta_prompt = f"""You are a prompt engineering expert. Analyze why the LLM failed to produce the correct output format.
+
+ORIGINAL PROMPT:
+{original_prompt[:1000]}...
+
+FAILED OUTPUT:
+{failed_output[:1000]}...
+
+VALIDATION ERRORS:
+{chr(10).join(f"- {error}" for error in validation_errors)}
+
+TASK:
+The LLM must produce output with these sections in THIS EXACT FORMAT:
+
+### SENTIMENT SCORES (0-100 scale)
+
+**YOU:**
+* Positive: X/100
+* Neutral: X/100
+* Negative: X/100
+* Overall Tone: POSITIVE/NEUTRAL/NEGATIVE
+
+**THEM:**
+* Positive: X/100
+...
+
+Generate a BRIEF additional instruction (2-3 sentences) to add to the system prompt that will ensure the LLM follows the exact format. Focus on the specific errors that occurred.
+
+RESPOND WITH ONLY THE ADDITIONAL INSTRUCTION, NOTHING ELSE."""
+
+        try:
+            meta_response = ollama.chat(
+                model=self.model_name,
+                messages=[{'role': 'user', 'content': meta_prompt}],
+                options={'temperature': 0.1, 'num_predict': 200}
+            )
+
+            additional_instruction = meta_response['message']['content'].strip()
+            print(f"  🧠 Meta-LLM suggests: {additional_instruction[:100]}...")
+            return additional_instruction
+
+        except Exception as e:
+            print(f"  ⚠️  Meta-LLM refinement failed: {e}")
+            return "Follow the exact format shown in the template. Use precise section headers and score formats."
+
     def parse_weekly_response(self, response_text: str, week_number: int) -> Dict[str, Any]:
-        """Parse LLM response into structured metrics."""
-        # TODO: Implement robust parsing
-        # For now, return raw text with metadata
-        return {
+        """Parse LLM response into structured metrics with validation."""
+
+        # Extract date range
+        date_info = self.extract_date_range(response_text)
+
+        # Validate metrics
+        validation = self.validate_metrics(response_text)
+
+        result = {
             'week_number': week_number,
             'raw_analysis': response_text,
-            # Will add structured parsing later
+            'date_range': date_info['date_range'],
+            'start_date': date_info['start_date'],
+            'end_date': date_info['end_date'],
+            'validation': validation
         }
+
+        # Log validation issues
+        if not validation['is_valid']:
+            print(f"  ⚠️  Validation errors in Week {week_number + 1}:")
+            for error in validation['errors']:
+                print(f"     - {error}")
+
+        if validation['warnings']:
+            print(f"  ⚠️  Warnings in Week {week_number + 1}:")
+            for warning in validation['warnings']:
+                print(f"     - {warning}")
+
+        return result
 
     def compress_historical_weeks(self, week_analyses: List[Dict]) -> str:
         """Compress multiple weeks into summary for context."""
@@ -263,7 +427,8 @@ OUTPUT REQUIREMENTS:
         self,
         messages: List[Dict],
         phone_number: str,
-        max_context_weeks: int = 4
+        max_context_weeks: int = 4,
+        incremental_save_path: Path = None
     ) -> List[Dict[str, Any]]:
         """
         Analyze conversation week-by-week with cumulative context.
@@ -272,6 +437,7 @@ OUTPUT REQUIREMENTS:
             messages: All conversation messages
             phone_number: Other participant's phone number
             max_context_weeks: After this many weeks, start compressing history
+            incremental_save_path: If provided, save progress after each week
 
         Returns:
             List of weekly analyses with full metrics
@@ -292,7 +458,8 @@ OUTPUT REQUIREMENTS:
         for week_num in sorted(weeks.keys()):
             week_messages = weeks[week_num]
 
-            print(f"Analyzing Week {week_num + 1} ({len(week_messages)} messages)...")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] Analyzing Week {week_num + 1} ({len(week_messages)} messages)...", flush=True)
 
             # Build prompt with historical context
             prompt = self.build_weekly_prompt(
@@ -307,13 +474,15 @@ OUTPUT REQUIREMENTS:
             start_time = time.time()
             start_memory = process.memory_info().rss / 1024 / 1024  # MB
 
-            # Call LLM
-            response = ollama.chat(
-                model=self.model_name,
-                messages=[
-                    {
-                        'role': 'system',
-                        'content': '''You are a relationship psychiatrist analyzing text message conversations. Provide both structured metrics AND thoughtful narrative insights.
+            # Call LLM with retry logic
+            max_retries = 5
+            retry_count = 0
+            analysis = None
+            prompt_versions = []  # Track all prompt variations tried
+            meta_llm_refinement = None
+
+            while retry_count <= max_retries:
+                system_prompt = '''You are a relationship psychiatrist analyzing text message conversations. Provide both structured metrics AND thoughtful narrative insights.
 
 CRITICAL RULES:
 1. Archetype names: ONLY use these exact 12: Innocent, Sage, Explorer, Outlaw, Magician, Hero, Lover, Jester, Everyperson, Caregiver, Ruler, Creator
@@ -321,26 +490,93 @@ CRITICAL RULES:
 3. Citation format: [DATE TIME | SENDER: "exact message"]
 4. Scores: Exact numbers (e.g., "75/100") never ranges
 5. Be thoughtful: Provide narrative insights, observations, and professional analysis alongside the metrics
-6. Be honest: Include observations, caveats, and nuanced interpretations where appropriate'''
-                    },
-                    {
-                        'role': 'user',
-                        'content': prompt
+6. Be honest: Include observations, caveats, and nuanced interpretations where appropriate
+
+CRITICAL TONE CONSISTENCY RULES:
+- If Positive score ≥70/100, Overall Tone MUST be "POSITIVE" or "VERY POSITIVE"
+- If Positive score ≤40/100, Overall Tone MUST be "NEGATIVE" or "VERY NEGATIVE"
+- If Positive score 41-69/100, Overall Tone should be "NEUTRAL" or "MIXED"
+- Ensure numerical scores and tone labels are internally consistent'''
+
+                # Add refinements on retry
+                if retry_count > 0:
+                    if retry_count == 1:
+                        # First retry: add generic strict instructions
+                        system_prompt += f'''
+
+⚠️ RETRY ATTEMPT 1/{max_retries}
+Your previous response had validation errors. You MUST:
+- Include ALL required sections: SENTIMENT SCORES, PERSONALITY TRAITS, PSYCHOLOGICAL TRAITS, EMOTIONAL STATES, ARCHETYPE DISTRIBUTION, COMMUNICATION METRICS, RELATIONSHIP EVOLUTION
+- Use EXACT format "YOU:" and "THEM:" with "Positive: X/100" scores
+- Include at least 3 message citations in format [YYYY-MM-DD HH:MM:SS AM/PM | SENDER: "message"]
+- Match numerical scores with Overall Tone (70+ = POSITIVE, 40- = NEGATIVE)
+- NO academic references or external sources'''
+                    else:
+                        # Second retry: use meta-LLM to refine prompt
+                        if analysis and not analysis['validation']['is_valid']:
+                            meta_llm_refinement = self.refine_prompt_with_llm(
+                                prompt,
+                                analysis['raw_analysis'],
+                                analysis['validation']['errors']
+                            )
+                            system_prompt += f'''
+
+⚠️ RETRY ATTEMPT 2/{max_retries} - META-LLM REFINED INSTRUCTIONS:
+{meta_llm_refinement}'''
+
+                # Track this prompt version (store full prompts for debugging)
+                prompt_versions.append({
+                    'attempt': retry_count + 1,
+                    'system_prompt': system_prompt,
+                    'system_prompt_length': len(system_prompt),
+                    'has_meta_refinement': meta_llm_refinement is not None,
+                    'meta_refinement': meta_llm_refinement,
+                    'temperature': 0.3 if retry_count == 0 else 0.2
+                })
+
+                response = ollama.chat(
+                    model=self.model_name,
+                    messages=[
+                        {
+                            'role': 'system',
+                            'content': system_prompt
+                        },
+                        {
+                            'role': 'user',
+                            'content': prompt
+                        }
+                    ],
+                    options={
+                        'temperature': 0.3 if retry_count == 0 else 0.2,  # Lower temperature on retry
+                        'num_predict': 4000
                     }
-                ],
-                options={
-                    'temperature': 0.3,
-                    'num_predict': 4000
-                }
-            )
+                )
 
-            # Calculate performance metrics
-            end_time = time.time()
-            end_memory = process.memory_info().rss / 1024 / 1024  # MB
-            elapsed = end_time - start_time
-            memory_used = end_memory - start_memory
+                # Calculate performance metrics
+                end_time = time.time()
+                end_memory = process.memory_info().rss / 1024 / 1024  # MB
+                elapsed = end_time - start_time
+                memory_used = end_memory - start_memory
 
-            analysis = self.parse_weekly_response(response['message']['content'], week_num)
+                analysis = self.parse_weekly_response(response['message']['content'], week_num)
+
+                # Add validation result to this prompt version
+                prompt_versions[-1]['validation_passed'] = analysis['validation']['is_valid']
+                prompt_versions[-1]['validation_errors'] = analysis['validation']['errors']
+                prompt_versions[-1]['validation_warnings'] = analysis['validation']['warnings']
+
+                # Check if validation passed
+                if analysis['validation']['is_valid']:
+                    break  # Success!
+
+                # If critical errors and retries remain, try again
+                if retry_count < max_retries:
+                    print(f"  🔄 Retrying due to validation errors (attempt {retry_count + 2}/{max_retries + 1})...")
+                    retry_count += 1
+                    start_time = time.time()  # Reset timer for retry
+                else:
+                    print(f"  ❌ Max retries reached. Saving analysis with validation errors.")
+                    break
 
             # Add performance data
             analysis['performance'] = {
@@ -349,12 +585,41 @@ CRITICAL RULES:
                 'memory_mb': memory_used,
                 'prompt_length': len(prompt),
                 'response_length': len(response['message']['content']),
-                'cpu_percent': process.cpu_percent()
+                'cpu_percent': process.cpu_percent(),
+                'retry_count': retry_count,
+                'prompt_versions': prompt_versions,
+                'final_prompt_worked': analysis['validation']['is_valid']
             }
 
             all_analyses.append(analysis)
 
-            print(f"✓ Week {week_num + 1} complete ({elapsed:.1f}s, {len(response['message']['content'])} chars)\n")
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp}] ✓ Week {week_num + 1} complete ({elapsed:.1f}s, {len(response['message']['content'])} chars)\n", flush=True)
+
+            # Save incremental progress
+            if incremental_save_path:
+                total_time = sum(w.get('performance', {}).get('elapsed_seconds', 0) for w in all_analyses)
+                total_chars = sum(w.get('performance', {}).get('response_length', 0) for w in all_analyses)
+
+                incremental_data = {
+                    'phone_number': phone_number,
+                    'model': self.model_name,
+                    'analysis_date': datetime.now().isoformat(),
+                    'total_weeks': len(all_analyses),
+                    'total_weeks_planned': len(weeks),
+                    'progress_percent': (len(all_analyses) / len(weeks) * 100),
+                    'performance_summary': {
+                        'total_time_seconds': total_time,
+                        'total_time_minutes': total_time / 60,
+                        'average_time_per_week': total_time / len(all_analyses),
+                        'total_response_characters': total_chars,
+                        'average_chars_per_week': total_chars / len(all_analyses)
+                    },
+                    'weekly_analyses': all_analyses
+                }
+
+                with open(incremental_save_path, 'w') as f:
+                    json.dump(incremental_data, f, indent=2)
 
             # Update historical context
             if week_num + 1 >= max_context_weeks:
@@ -398,8 +663,16 @@ def main(phone_number: str = "309-948-9979", model: str = "llama3.2", test_mode:
     # Initialize analyzer
     analyzer = WeeklyMetricsAnalyzer(model_name=model)
 
+    # Set up incremental save path
+    suffix = "_test" if test_mode else ""
+    incremental_file = conversations_dir / f"{phone_number}_weekly_metrics{suffix}_PROGRESS.json"
+
     # Run weekly analysis
-    weekly_analyses = analyzer.analyze_conversation_weekly(messages, phone_number)
+    weekly_analyses = analyzer.analyze_conversation_weekly(
+        messages,
+        phone_number,
+        incremental_save_path=incremental_file
+    )
 
     # Calculate aggregate stats
     total_time = sum(w.get('performance', {}).get('elapsed_seconds', 0) for w in weekly_analyses)
@@ -409,21 +682,61 @@ def main(phone_number: str = "309-948-9979", model: str = "llama3.2", test_mode:
     # Save results
     suffix = "_test" if test_mode else ""
     output_file = conversations_dir / f"{phone_number}_weekly_metrics{suffix}.json"
+
+    output_data = {
+        'phone_number': phone_number,
+        'model': model,
+        'analysis_date': datetime.now().isoformat(),
+        'total_weeks': len(weekly_analyses),
+        'performance_summary': {
+            'total_time_seconds': total_time,
+            'total_time_minutes': total_time / 60,
+            'average_time_per_week': avg_time_per_week,
+            'total_response_characters': total_chars,
+            'average_chars_per_week': total_chars / len(weekly_analyses) if weekly_analyses else 0
+        },
+        'weekly_analyses': weekly_analyses
+    }
+
     with open(output_file, 'w') as f:
-        json.dump({
-            'phone_number': phone_number,
-            'model': model,
-            'analysis_date': datetime.now().isoformat(),
-            'total_weeks': len(weekly_analyses),
-            'performance_summary': {
-                'total_time_seconds': total_time,
-                'total_time_minutes': total_time / 60,
-                'average_time_per_week': avg_time_per_week,
-                'total_response_characters': total_chars,
-                'average_chars_per_week': total_chars / len(weekly_analyses) if weekly_analyses else 0
-            },
-            'weekly_analyses': weekly_analyses
-        }, f, indent=2)
+        json.dump(output_data, f, indent=2)
+
+    # Clean up progress file
+    if incremental_file.exists():
+        incremental_file.unlink()
+
+    # Save debug prompt log (tracks what prompts worked)
+    debug_file = conversations_dir / f"{phone_number}_prompt_debug{suffix}.json"
+    prompt_effectiveness = []
+
+    for week in weekly_analyses:
+        week_num = week['week_number']
+        prompt_versions = week['performance'].get('prompt_versions', [])
+
+        # Only track if retries occurred
+        if len(prompt_versions) > 1:
+            prompt_effectiveness.append({
+                'week_number': week_num + 1,
+                'date_range': week.get('date_range', 'Unknown'),
+                'attempts': len(prompt_versions),
+                'final_success': week['validation']['is_valid'],
+                'prompt_versions': prompt_versions,
+                'validation_errors': week['validation'].get('errors', []),
+                'validation_warnings': week['validation'].get('warnings', [])
+            })
+
+    if prompt_effectiveness:
+        with open(debug_file, 'w') as f:
+            json.dump({
+                'phone_number': phone_number,
+                'model': model,
+                'analysis_date': datetime.now().isoformat(),
+                'total_weeks_with_retries': len(prompt_effectiveness),
+                'prompt_effectiveness_log': prompt_effectiveness
+            }, f, indent=2)
+
+        print(f"\n📝 Prompt debug log saved: {debug_file.name}")
+        print(f"   {len(prompt_effectiveness)} week(s) required retries")
 
     print(f"\n{'='*80}")
     print(f"✅ Weekly analysis complete: {output_file.name}")
